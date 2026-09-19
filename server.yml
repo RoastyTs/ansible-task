@@ -58,11 +58,11 @@
         src: ./devops_pract/
         dest: "{{ app_path }}"
         remote_src: true
-
+            
     - name: Install PHP dependencies
       shell: composer install --no-interaction
-        args:
-      chdir: "{{ app_path }}"
+      args:
+        chdir: "{{ app_path }}"
       environment:
         COMPOSER_ALLOW_SUPERUSER: 1
      
