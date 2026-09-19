@@ -1,133 +1,169 @@
 ---
 
 - hosts: db
-  remote_user: root
   become: yes
-  tasks: 
-  - name: Install MariaDB
-    apt:
-      name: mariadb-server
-      state: present
-      update_cache: yes
-  - name: Start MariaDB
-    service:
-      name: mariadb
-      state: started
-      enabled: yes
-      
-  - name: Create db
-    shell: mysql -e "CREATE DATABASE IF NOT EXISTS {{ db_name }}; CREATE USER IF NOT EXISTS '{{ db_user }}'@'%' IDENTIFIED BY '{{ db_pass }}'; GRANT ALL PRIVILEGES ON {{ db_name }}.* TO '{{ db_user }}'@'%'; FLUSH PRIVILEGES;"
+  tasks:
+    - name: Install MariaDB
+      apt:
+        name:
+          - mariadb-server
+          - python3-pymysql
+        state: present
+        update_cache: yes
 
-  
--  hosts: server
-   remote_user: root
-   become: yes
-   tasks:
-     - name: Install Apache PHP Laravel Composer Node NPM
-       apt:
-         name:
-           - apache2
-           - php
-           - composer
-           - nodejs
-           - npm
-           - php-mbstring
-           - php-xml
-           - php-curl
-           - php-bcmath
-           - php-mysql
-         state: present
-         update_cache: yes
-     - name: Clone GitHub repo
-       git:
-         repo: 'https://github.com/Practical-DevOps/app-for-devops'
-         dest: /var/www/app
-         force: yes
-     - name: Create .env 
-       copy:
-         content: |
-           APP_NAME=Laravel
-           APP_ENV=local
-           APP_KEY=
-           APP_DEBUG=true
-           APP_URL=http://localhost
+    - name: Start MariaDB
+      service:
+        name: mysql
+        state: started
+        enabled: yes
 
-           LOG_CHANNEL=stack
-           LOG_DEPRECATIONS_CHANNEL=null
-           LOG_LEVEL=debug
+    - name: Create database
+      mysql_db:
+        login_user: root
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        name: "{{ db_name }}"
+        state: present
+        encoding: utf8
 
-           DB_CONNECTION=mysql
-           DB_HOST={{ db_host }}
-           DB_PORT=3306
-           DB_DATABASE={{ db_name }}
-           DB_USERNAME={{ db_user }}
-           DB_PASSWORD={{ db_pass }}
+    - name: Create user
+      mysql_user:
+        login_user: root
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+        host: '%'
+        priv: "{{ db_name }}.*:ALL"
+        state: present
 
-           BROADCAST_DRIVER=log
-           CACHE_DRIVER=file
-           FILESYSTEM_DISK=local
-           QUEUE_CONNECTION=sync
-           SESSION_DRIVER=file
-           SESSION_LIFETIME=120
+    - name: Configure MariaDB bind address
+      copy:
+        dest: /etc/mysql/my.cnf
+        content: |
+          [mysqld]
+          bind-address=0.0.0.0
+      notify: Restart MariaDB
 
-           MEMCACHED_HOST=127.0.0.1
+  handlers:
+    - name: Restart MariaDB
+      service:
+        name: mysql
+        state: restarted
 
-           REDIS_HOST=127.0.0.1
-           REDIS_PASSWORD=null
-           REDIS_PORT=6379
+- hosts: server
+  become: yes
+  tasks:
+    - name: Add PHP repository
+      apt_repository:
+        repo: ppa:ondrej/php
 
-           MAIL_MAILER=smtp
-           MAIL_HOST=mailhog
-           MAIL_PORT=1025
-           MAIL_USERNAME=null
-           MAIL_PASSWORD=null
-           MAIL_ENCRYPTION=null
-           MAIL_FROM_ADDRESS="hello@example.com"
-           MAIL_FROM_NAME="${APP_NAME}"
-         dest: /var/www/app/.env
-     - name: Composer install
-       shell: composer install --no-interaction
-       args:
-         chdir: /var/www/app
-     - name: Generate app key
-       shell: php artisan key:generate 
-       args:
-         chdir: /var/www/app
-     - name: Run migrations
-       shell: php artisan migrate --force
-       args:
-         chdir: /var/www/app
-     - name: Configure Apache virtualhost
-       copy:
-         content: |
-           <VirtualHost *:80>
-               DocumentRoot /var/www/app/public
-               <Directory /var/www/app/public>
-                   AllowOverride All
-                   Require all granted
-               </Directory>
-           </VirtualHost>
-         dest: /etc/apache2/sites-available/app.conf
-     - name: Enable mod_rewrite
-       shell: a2enmod rewrite
+    - name: Download NodeSource setup
+      uri:
+        url: https://deb.nodesource.com/setup_22.x
+        return_content: yes
+      register: nodesource_setup
 
-     - name: Enable site
-       shell: a2ensite app.conf
+    - name: Run NodeSource setup
+      shell:
+        cmd: bash -s -- -y
+        stdin: "{{ nodesource_setup.content }}"
 
-     - name: Disable default site
-       shell: a2dissite 000-default.conf
+    - name: Install packages
+      apt:
+        name:
+          - apache2
+          - nodejs
+          - php
+          - php-cli
+          - php-curl
+          - php-mbstring
+          - php-xml
+          - php-mysql
+          - php-bcmath
+        state: present
+        update_cache: yes
 
-     - name: Restart Apache
-       service:
-         name: apache2
-         state: restarted
-     - name: Set permissions
-       file:
-         path: "{{ item }}"
-         mode: '0775'
-         recurse: yes
-       loop:
-         - /var/www/app/storage
-         - /var/www/app/bootstrap/cache
+    - name: Install Composer
+      get_url:
+        url: https://getcomposer.org/composer-stable.phar
+        dest: /usr/local/bin/composer
+        mode: '0755'
 
+    - name: Clone GitHub repo
+      git:
+        repo: 'https://github.com/Practical-DevOps/app-for-devops'
+        dest: ./devops_pract
 
+    - name: Copy project to app folder
+      copy:
+        src: ./devops_pract/
+        dest: /var/www/app
+        remote_src: yes
+
+    - name: Install PHP dependencies
+      composer:
+        command: install
+        working_dir: /var/www/app
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Install npm dependencies
+      npm:
+        path: /var/www/app
+
+    - name: Create .env
+      template:
+        src: app.env.j2
+        dest: /var/www/app/.env
+
+    - name: Generate app key
+      command:
+        cmd: php artisan key:generate
+        chdir: /var/www/app
+
+    - name: Run migrations
+      command:
+        cmd: php artisan migrate --force
+        chdir: /var/www/app
+
+    - name: Build frontend
+      command:
+        cmd: npm run build
+        chdir: /var/www/app
+
+    - name: Remove node_modules
+      file:
+        path: /var/www/app/node_modules
+        state: absent
+
+    - name: Set owner
+      file:
+        path: /var/www/app
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Enable mod_rewrite
+      apache2_module:
+        name: rewrite
+
+    - name: Configure Apache virtualhost
+      template:
+        src: apache.conf.j2
+        dest: /etc/apache2/sites-available/app.conf
+      notify: Restart Apache
+
+    - name: Enable site
+      command:
+        cmd: a2ensite app
+      notify: Restart Apache
+
+    - name: Disable default site
+      command:
+        cmd: a2dissite 000-default
+      notify: Restart Apache
+
+  handlers:
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
