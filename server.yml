@@ -60,11 +60,12 @@
         remote_src: true
 
     - name: Install PHP dependencies
-      composer:
-        command: install
-        working_dir: "{{ app_path }}"
-        environment: 
-          COMPOSER_ALLOW_SUPERUSER: 1
+      shell: composer install --no-interaction
+        args:
+      chdir: "{{ app_path }}"
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: 1
+     
 
     - name: Install NPM dependencies
       npm:
