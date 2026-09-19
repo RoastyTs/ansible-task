@@ -1,0 +1,127 @@
+---
+- hosts: server
+  become: yes
+  vars_files:
+    - vars/server_vars.yml
+    - vars/db_vars.yml
+  tasks:
+    - name: Start message
+      debug:
+        msg: "Create task to deploy DB server and App server with Laravel"
+    
+    - name: Add php repository
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+ 
+    - name: Download nodesource setup
+      uri:
+        url: https://deb.nodesource.com/setup_22.x
+        return_content: yes
+      register: nodesource_setup
+
+    - name: Run nodesource setup
+      shell:
+        cmd: bash -s -- -y
+        stdin: "{{ nodesource_setup.content }}"
+     
+    - name: Installation of Apache, Nodejs, PHP8 and its dependencies
+      apt:
+        name:
+          - apache2
+          - nodejs
+          - "php{{ php_version }}"
+          - "php{{ php_version }}-cli"
+          - "php{{ php_version }}-curl"
+          - "php{{ php_version }}-bz2"
+          - "php{{ php_version }}-mbstring"
+          - "php{{ php_version }}-int1"
+          - "php{{ php_version }}-xml"
+          - "php{{ php_version }}-mysql"
+          - "libapache2-mod-php{{ php_version }}"
+        state: present
+        update_cache: yes
+
+    - name: Installation of Composer
+      get_url:
+        url: https://getcomposer.org/download/2.10.3/composer.phar
+        dest: /usr/local/bin/composer
+        mode: 0755
+
+    - name: Clone repo
+      git:
+        repo: "{{ app_repo }}"
+        dest: ./devops_pract
+ 
+    - name: Copy the project
+      copy:
+        src: ./devops_pract/
+        dest: "{{ app_path }}"
+        remote_src: true
+
+    - name: Install PHP dependencies
+      composer:
+        command: install
+        working_dir: "{{ app_path }}"
+        environment: 
+          COMPOSER_ALLOW_SUPERUSER: 1
+
+    - name: Install NPM dependencies
+      npm:
+        path: "{{ app_path }}"
+      
+    - name: Create .env
+      template:
+        src: app.conf.j2
+        dest: "{{ app_path }}/.env"
+    
+    - name: Key generation Laravel
+      command:
+        cmd: php artisan key:generate
+        chdir: "{{ app_path }}"
+
+    - name: DB migration
+      command:
+        cmd: php artisan migrate --force
+        chdir: "{{ app_path }}"
+    
+    - name: Frontend build
+      command:
+        cmd: npm run build
+        chdir: "{{ app_path }}"
+
+    - name: node_modules deletion
+      file:
+        path: "{{ app_path }}/node_modules"
+        state: absent
+
+    - name: Set owner
+      file:
+        path: "{{ app_path }}"
+        owner: "{{ apache_user }}"
+        group: "{{ apache_user }}"
+        recurse: yes
+
+   
+    - name: Start Apache module
+      apache2_module:
+        name: rewrite
+
+    - name: Config Apache
+      template:
+        src: apache.conf.j2
+        dest: /etc/apache2/sites-available/app.conf
+      notify: Restart Apache
+
+    - name: Website start
+      command:
+        cmd: a2ensite app
+      notify: Restart Apache
+
+  handlers:
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
+
+     
